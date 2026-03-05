@@ -5,6 +5,7 @@ Supports: Basque (eu), Spanish (es), English (en)
 
 import os
 import time
+import asyncio
 import logging
 import tempfile
 from typing import Optional
@@ -202,10 +203,11 @@ async def transcribe(
     if language:
         generate_kwargs["language"] = SUPPORTED_LANGUAGES[language]
 
-    # Run inference
+    # Run inference in a thread pool so health checks remain responsive
     t0 = time.time()
     try:
-        result = pipe(
+        result = await asyncio.to_thread(
+            pipe,
             audio,
             batch_size=BATCH_SIZE,
             generate_kwargs=generate_kwargs,
@@ -259,9 +261,10 @@ async def detect_language(
     # Use only first 30 seconds for detection
     audio_30s = audio[: 16_000 * 30]
 
-    # Run pipeline without specifying language – model auto-detects
+    # Run pipeline in a thread pool so health checks remain responsive
     try:
-        result = pipe(
+        result = await asyncio.to_thread(
+            pipe,
             audio_30s,
             generate_kwargs={"task": "transcribe"},
             return_timestamps=False,
