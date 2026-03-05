@@ -46,32 +46,48 @@ logger = logging.getLogger(__name__)
 # Global model references
 # ---------------------------------------------------------------------------
 pipe = None
+model_status = {"state": "not_started", "detail": ""}
 
 
 def load_model():
     """Load model and processor, build the ASR pipeline."""
-    global pipe
-    logger.info("Loading model %s on %s (%s)…", MODEL_ID, DEVICE, TORCH_DTYPE)
+    global pipe, model_status
+    import threading
 
-    model = AutoModelForSpeechSeq2Seq.from_pretrained(
-        MODEL_ID,
-        torch_dtype=TORCH_DTYPE,
-        low_cpu_mem_usage=True,
-        use_safetensors=True,
-    ).to(DEVICE)
+    def _download_and_load():
+        global pipe, model_status
+        try:
+            model_status = {"state": "downloading", "detail": f"Deskargatzen: {MODEL_ID}"}
+            logger.info("Downloading/loading model %s on %s (%s)…", MODEL_ID, DEVICE, TORCH_DTYPE)
 
-    processor = AutoProcessor.from_pretrained(MODEL_ID)
+            model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                MODEL_ID,
+                torch_dtype=TORCH_DTYPE,
+                low_cpu_mem_usage=True,
+                use_safetensors=True,
+            ).to(DEVICE)
 
-    pipe = pipeline(
-        "automatic-speech-recognition",
-        model=model,
-        tokenizer=processor.tokenizer,
-        feature_extractor=processor.feature_extractor,
-        torch_dtype=TORCH_DTYPE,
-        device=DEVICE,
-    )
+            model_status = {"state": "downloading", "detail": f"Prozesadorea kargatzen: {MODEL_ID}"}
+            processor = AutoProcessor.from_pretrained(MODEL_ID)
 
-    logger.info("Model loaded successfully.")
+            model_status = {"state": "loading", "detail": "Pipeline konfiguratzen..."}
+            pipe = pipeline(
+                "automatic-speech-recognition",
+                model=model,
+                tokenizer=processor.tokenizer,
+                feature_extractor=processor.feature_extractor,
+                torch_dtype=TORCH_DTYPE,
+                device=DEVICE,
+            )
+
+            model_status = {"state": "ready", "detail": ""}
+            logger.info("Model loaded successfully.")
+        except Exception as e:
+            model_status = {"state": "error", "detail": str(e)}
+            logger.error("Failed to load model: %s", e)
+
+    thread = threading.Thread(target=_download_and_load, daemon=True)
+    thread.start()
 
 
 @asynccontextmanager
@@ -119,6 +135,21 @@ def _load_audio(path: str, sr: int = 16_000) -> np.ndarray:
 @app.get("/health")
 async def health():
     """Health-check endpoint."""
+    if model_status["state"] in ("downloading", "loading", "not_started"):
+        return {
+            "status": "loading",
+            "model": MODEL_ID,
+            "device": DEVICE,
+            "model_state": model_status["state"],
+            "detail": model_status["detail"],
+            "supported_languages": SUPPORTED_LANGUAGES,
+        }
+    if model_status["state"] == "error":
+        return {
+            "status": "error",
+            "model": MODEL_ID,
+            "detail": model_status["detail"],
+        }
     return {
         "status": "ok",
         "model": MODEL_ID,
